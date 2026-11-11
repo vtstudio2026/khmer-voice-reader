@@ -82,7 +82,7 @@ PAGE = r"""<!DOCTYPE html>
 
 <div class="card">
   <h2>🎬 បង្កើត Reel (វីដេអូបញ្ឈរ 9:16)</h2>
-  <p class="sub">ប្រើអត្ថបទ និងសំឡេងខាងលើ។ ដាក់រូបភាព ១ ឬច្រើនសន្លឹក វានឹងបង្ហាញតាមលំដាប់ ជាមួយអក្សររត់។</p>
+  <p class="sub">ប្រើអត្ថបទ និងសំឡេងខាងលើ។ ដាក់រូបភាព ១ ឬច្រើនសន្លឹក វានឹងបង្ហាញតាមលំដាប់ ជាមួយអក្សររត់។<br>💡 ចង់ឲ្យរូបត្រូវនឹងសំឡេង៖ ចុះបន្ទាត់ទទេ (Enter ២ ដង) រវាងឈុតនីមួយៗ — ឈុតទី ១ = រូបទី ១, ឈុតទី ២ = រូបទី ២...</p>
 
   <input type="text" id="title" maxlength="60" placeholder="ចំណងជើង (មិនដាក់ក៏បាន)">
 
@@ -221,16 +221,18 @@ function drawCover(g, im, zoom) {
 
 function drawFrame(g, t, tl) {
   const tt = Math.max(0, Math.min(t, tl.total));
-  // background
-  if (tl.imgs.length) {
-    const per = tl.total / tl.imgs.length;
-    const i = Math.min(tl.imgs.length - 1, Math.floor(tt / per));
-    const local = tt - i * per;
+  // background: each image stays exactly as long as its own sentences are spoken
+  if (tl.spans.length) {
+    let k = tl.spans.findIndex(sp => tt < sp.end);
+    if (k < 0) k = tl.spans.length - 1;
+    const sp = tl.spans[k];
+    const per = Math.max(0.001, sp.end - sp.start);
+    const local = tt - sp.start;
     g.fillStyle = '#000'; g.fillRect(0, 0, W, H);
-    drawCover(g, tl.imgs[i], 1 + 0.08 * (local / per));
-    if (i > 0 && local < 0.5) {
+    drawCover(g, tl.imgs[sp.img], 1 + 0.08 * Math.min(1, local / per));
+    if (k > 0 && local < 0.5) {
       g.globalAlpha = 1 - local / 0.5;
-      drawCover(g, tl.imgs[i - 1], 1.08);
+      drawCover(g, tl.imgs[tl.spans[k - 1].img], 1.08);
       g.globalAlpha = 1;
     }
   } else {
@@ -300,7 +302,10 @@ $('mk').onclick = async () => {
   if (!text) { say('សូមបញ្ចូលអត្ថបទខាងលើជាមុនសិន។'); return; }
   const mime = pickMime();
   if (!mime) { say('Browser នេះមិនអាចថតវីដេអូបានទេ។ សូមប្រើ Chrome។'); return; }
-  const segTexts = splitText(text);
+  // scenes are separated by a blank line; each scene = one image
+  const scenes = text.split(/\n\s*\n/).map(s => s.trim()).filter(Boolean);
+  const segTexts = [], segScene = [];
+  scenes.forEach((sc, si) => splitText(sc).forEach(t => { segTexts.push(t); segScene.push(si); }));
   if (segTexts.length > MAX_SEG) { say('អត្ថបទវែងពេកសម្រាប់ Reel (អតិបរមា ' + MAX_SEG + ' ប្រយោគ)។'); return; }
 
   const AC = window.AudioContext || window.webkitAudioContext;
@@ -325,7 +330,29 @@ $('mk').onclick = async () => {
       segs.push({ text: segTexts[i], buf, start: at, end: at + buf.duration + GAP });
       at += buf.duration + GAP;
     }
-    const tl = { segs, imgs, total: at, title: $('title').value.trim() };
+    // which image goes with each sentence
+    const n = imgs.length;
+    segs.forEach((s, i) => {
+      if (scenes.length > 1) {
+        // marked scenes: scene 1 -> image 1, scene 2 -> image 2 ...
+        s.img = Math.min(n - 1, segScene[i]);
+      } else {
+        // no marks: split by time, but never change image in the middle of a sentence
+        const mid = (s.start + s.end) / 2;
+        s.img = Math.min(n - 1, Math.floor(mid / at * n));
+      }
+    });
+    const spans = [];
+    if (n) for (const s of segs) {
+      const last = spans[spans.length - 1];
+      if (last && last.img === s.img) last.end = s.end;
+      else spans.push({ img: s.img, start: s.start, end: s.end });
+    }
+    if (spans.length) spans[spans.length - 1].end = at + 1;
+    if (n > 1 && scenes.length > 1 && scenes.length !== n) {
+      say('⚠️ មាន ' + scenes.length + ' ឈុត តែមាន ' + n + ' រូប — រូបខ្លះអាចមិនត្រូវ។ កំពុងបន្ត...', true);
+    }
+    const tl = { segs, imgs, spans, total: at, title: $('title').value.trim() };
 
     // 2) record canvas + audio
     const cv = $('cv'), g = cv.getContext('2d');
